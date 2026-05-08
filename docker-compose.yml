@@ -1,4 +1,5 @@
-version: '3.8'
+# Note : La ligne 'version' a été supprimée car elle est désormais obsolète 
+# dans les versions récentes de Docker Compose et générait le warning de votre premier log.
 
 services:
   backend:
@@ -9,6 +10,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/app:/app/app
+      # Si votre backend écrit des fichiers audio uploadés, ce volume est parfait :
       - ./backend/uploads:/app/uploads
     environment:
       - SECRET_KEY=your-super-secret-key-for-development
@@ -22,9 +24,12 @@ services:
       - "3000:3000"
     volumes:
       - ./frontend:/app
+      # Ce volume anonyme protège votre dossier node_modules du conteneur 
+      # contre l'écrasement par le dossier de votre machine hôte (Windows) :
       - /app/node_modules
     environment:
       - NUXT_HOST=0.0.0.0
+      - NUXT_PORT=3000
     restart: unless-stopped
     depends_on:
       - backend
