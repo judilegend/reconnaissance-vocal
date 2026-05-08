@@ -1,10 +1,64 @@
 import torch
 import librosa
+import numpy as np
 from transformers import pipeline, Wav2Vec2ForCTC, Wav2Vec2Processor
-from typing import Dict, Any
+from typing import Dict, Any, List
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class AudioPreprocessor:
+    @staticmethod
+    def preprocess_audio(audio_path: str, max_duration: float = 15.0) -> np.ndarray:
+        """
+        Preprocess audio: load, trim to max_duration, reduce noise, normalize.
+        """
+        logger.info(f"Loading audio from {audio_path}")
+        speech, sample_rate = librosa.load(audio_path, sr=16000)
+
+        # Trim to max_duration seconds
+        max_samples = int(max_duration * sample_rate)
+        if len(speech) > max_samples:
+            speech = speech[:max_samples]
+            logger.info(f"Trimmed audio to {max_duration}s")
+
+        # Simple noise reduction using spectral gating
+        # This is a basic implementation; for better results, consider noisereduce library
+        stft = librosa.stft(speech)
+        magnitude, phase = librosa.magphase(stft)
+
+        # Estimate noise from first 0.5 seconds
+        noise_samples = int(0.5 * sample_rate)
+        if len(speech) > noise_samples:
+            noise_stft = librosa.stft(speech[:noise_samples])
+            noise_magnitude = np.abs(noise_stft)
+            noise_threshold = np.mean(noise_magnitude, axis=1, keepdims=True)
+
+            # Apply spectral gating
+            mask = magnitude > noise_threshold * 1.5
+            magnitude_clean = magnitude * mask
+        else:
+            magnitude_clean = magnitude
+
+        # Reconstruct audio
+        stft_clean = magnitude_clean * phase
+        speech_clean = librosa.istft(stft_clean)
+
+        # Normalize
+        speech_clean = librosa.util.normalize(speech_clean)
+
+        logger.info(f"Audio preprocessing completed. Shape: {speech_clean.shape}")
+        return speech_clean
 
 class TranscriptionModel:
     def transcribe(self, audio_path: str) -> str:
+        raise NotImplementedError
+
+    def transcribe_streaming(self, audio_path: str) -> List[str]:
+        """
+        Return transcription tokens progressively.
+        """
         raise NotImplementedError
 
 class Wav2Vec2Model(TranscriptionModel):
@@ -12,22 +66,56 @@ class Wav2Vec2Model(TranscriptionModel):
         self.model_name = "facebook/wav2vec2-base-960h"
         self.processor = Wav2Vec2Processor.from_pretrained(self.model_name)
         self.model = Wav2Vec2ForCTC.from_pretrained(self.model_name)
+        self.preprocessor = AudioPreprocessor()
 
     def transcribe(self, audio_path: str) -> str:
-        # Load audio
-        speech, sample_rate = librosa.load(audio_path, sr=16000)
-        
+        logger.info("Starting Wav2Vec2 transcription")
+        speech = self.preprocessor.preprocess_audio(audio_path)
+
         # Process audio
         input_values = self.processor(speech, return_tensors="pt", sampling_rate=16000).input_values
-        
+
         # Infer
         with torch.no_grad():
             logits = self.model(input_values).logits
-        
+
         # Decode
         predicted_ids = torch.argmax(logits, dim=-1)
         transcription = self.processor.batch_decode(predicted_ids)[0]
+        logger.info(f"Transcription completed: {transcription}")
         return transcription
+
+    def transcribe_streaming(self, audio_path: str) -> List[str]:
+        """
+        Simulate streaming by returning tokens progressively.
+        In a real implementation, this would process chunks.
+        """
+        logger.info("Starting streaming Wav2Vec2 transcription")
+        speech = self.preprocessor.preprocess_audio(audio_path)
+
+        # Process audio
+        input_values = self.processor(speech, return_tensors="pt", sampling_rate=16000).input_values
+
+        # Infer
+        with torch.no_grad():
+            logits = self.model(input_values).logits
+
+        # Decode to tokens
+        predicted_ids = torch.argmax(logits, dim=-1).squeeze().tolist()
+
+        # Get vocabulary for token mapping
+        vocab = self.processor.tokenizer.get_vocab()
+        id_to_token = {v: k for k, v in vocab.items()}
+
+        tokens = []
+        for token_id in predicted_ids:
+            if token_id in id_to_token:
+                token = id_to_token[token_id]
+                if token not in ['[PAD]', '[UNK]', '|']:  # Filter out special tokens
+                    tokens.append(token)
+
+        logger.info(f"Streaming tokens generated: {len(tokens)} tokens")
+        return tokens
 
 class WhisperTinyModel(TranscriptionModel):
     def __init__(self):
@@ -36,12 +124,17 @@ class WhisperTinyModel(TranscriptionModel):
             "automatic-speech-recognition",
             model=self.model_name,
             chunk_length_s=30,
-            device="cpu", # Default to CPU, can be changed to "cuda" if GPU is available
+            device="cpu",
         )
 
     def transcribe(self, audio_path: str) -> str:
         result = self.pipe(audio_path)
         return result["text"]
+
+    def transcribe_streaming(self, audio_path: str) -> List[str]:
+        # For simplicity, return the full text as a single "token"
+        result = self.pipe(audio_path)
+        return [result["text"]]
 
 # Model Factory
 class ModelFactory:
