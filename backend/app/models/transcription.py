@@ -1,3 +1,4 @@
+import time
 import torch
 import librosa
 import numpy as np
@@ -67,6 +68,7 @@ class Wav2Vec2Model(TranscriptionModel):
         self.processor = Wav2Vec2Processor.from_pretrained(self.model_name)
         self.model = Wav2Vec2ForCTC.from_pretrained(self.model_name)
         self.preprocessor = AudioPreprocessor()
+        self.model_weight_millions = sum(p.numel() for p in self.model.parameters()) / 1e6
 
     def transcribe(self, audio_path: str) -> str:
         logger.info("Starting Wav2Vec2 transcription")
@@ -103,6 +105,15 @@ class Wav2Vec2Model(TranscriptionModel):
         # Decode to tokens
         predicted_ids = torch.argmax(logits, dim=-1).squeeze().tolist()
 
+        # Calculate token confidence scores
+        token_ids = torch.tensor(predicted_ids, device=logits.device)
+        probs = torch.softmax(logits, dim=-1)[0, torch.arange(logits.shape[1]), token_ids]
+        precision_score = float(probs.mean().item())
+        prob_np = probs.cpu().numpy()
+        precision_history = [float(v) for v in prob_np[:10].tolist()]
+        std = float(prob_np.std()) if float(prob_np.std()) > 1e-9 else 1e-9
+        z_score = float(((prob_np - prob_np.mean()) / std).mean())
+
         # Get vocabulary for token mapping
         vocab = self.processor.tokenizer.get_vocab()
         id_to_token = {v: k for k, v in vocab.items()}
@@ -114,8 +125,18 @@ class Wav2Vec2Model(TranscriptionModel):
                 if token not in ['[PAD]', '[UNK]', '|']:  # Filter out special tokens
                     tokens.append(token)
 
+        precision_percent = precision_score * 100
+        filled = int(min(max(precision_percent / 10, 0), 10))
+        precision_graph = "█" * filled + "░" * (10 - filled) + f" {precision_percent:.1f}%"
+
         logger.info(f"Streaming tokens generated: {len(tokens)} tokens")
-        return tokens
+        return tokens, {
+            "model_weight_millions": round(self.model_weight_millions, 2),
+            "precision_score": round(precision_score, 4),
+            "z_score": round(z_score, 4),
+            "precision_graph": precision_graph,
+            "precision_history": precision_history,
+        }
 
 class WhisperTinyModel(TranscriptionModel):
     def __init__(self):
