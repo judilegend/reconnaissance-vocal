@@ -76,7 +76,7 @@ class Orchestrator:
                 await asyncio.sleep(0.1)  # Simulate delay between tokens
 
             # Combine tokens into final result
-            task.result = "".join(task.streaming_tokens).replace("|", " ").strip()
+            task.result = " ".join(task.streaming_tokens).strip()
             task.performance_metrics = metrics
             task.status = "COMPLETED"
             logger.info(f"Task {task.task_id} completed: {task.result}")
