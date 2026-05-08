@@ -1,12 +1,19 @@
 fastapi==0.111.0
 uvicorn==0.30.1
 python-multipart==0.0.9
+
+# Correction spécifique pour le bug passlib/bcrypt (DOIT être <4.0.0)
+bcrypt==3.2.2
+passlib[bcrypt]==1.7.4
+
+# Le reste de vos dépendances
 transformers==4.41.2
---find-links https://download.pytorch.org/whl/cpu
-torch==2.3.1
 librosa==0.10.2.post1
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
 python-dotenv==1.0.1
 pydantic==2.7.4
 jinja2==3.1.4
+
+# Optimisation pour télécharger la version CPU de PyTorch plus proprement
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1
