@@ -4,8 +4,10 @@ import uuid
 from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, status, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from pydantic import BaseModel
 from datetime import timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
 
 from app.auth import (
     Token, 
@@ -28,8 +30,6 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True}
 )
 
-from fastapi.openapi.utils import get_openapi
-
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -40,10 +40,14 @@ def custom_openapi():
         routes=app.routes,
     )
     openapi_schema["components"]["securitySchemes"] = {
-        "bearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT"
+        "OAuth2PasswordBearer": {
+            "type": "oauth2",
+            "flows": {
+                "password": {
+                    "tokenUrl": "/token",
+                    "scopes": {}
+                }
+            }
         }
     }
     for path in openapi_schema["paths"]:
@@ -51,11 +55,29 @@ def custom_openapi():
             continue
         for method in openapi_schema["paths"][path]:
             if method.lower() != "options":
-                openapi_schema["paths"][path][method]["security"] = [{"bearerAuth": []}]
+                openapi_schema["paths"][path][method]["security"] = [{"OAuth2PasswordBearer": []}]
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
+class PerformanceMetrics(BaseModel):
+    model_weight_millions: float
+    precision_score: float
+    z_score: float
+    latency_ms: float
+    precision_graph: str
+    precision_history: List[float]
+
+class TaskStatus(BaseModel):
+    task_id: str
+    model_type: str
+    status: str
+    result: Optional[str] = None
+    streaming_tokens: Optional[List[str]] = None
+    performance_metrics: Optional[PerformanceMetrics] = None
+    error: Optional[str] = None
+    duration: Optional[float] = None
 
 # CORS configuration
 allow_origins = os.getenv("ALLOW_ORIGINS", "*").split(",")
@@ -109,18 +131,36 @@ async def transcribe_audio(
     task_id = await orchestrator.create_task(model_type, file_path)
     return {"task_id": task_id, "message": "Transcription task started"}
 
-@app.get("/tasks/{task_id}")
+@app.get("/tasks/{task_id}", response_model=TaskStatus)
 async def get_task_status(
     task_id: str,
     current_user: User = Depends(get_current_active_user)
 ):
     """
     Get the status and result of a transcription task.
+    Returns model performance metrics including precision, z-score, and a simple precision graph.
     """
     status_info = orchestrator.get_task_status(task_id)
     if not status_info:
         raise HTTPException(status_code=404, detail="Task not found")
     return status_info
+
+@app.get("/tasks/{task_id}/metrics", response_model=PerformanceMetrics)
+async def get_task_metrics(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get only the performance metrics for a completed transcription task.
+    Returns precision score, z-score, latency and model weight.
+    """
+    status_info = orchestrator.get_task_status(task_id)
+    if not status_info:
+        raise HTTPException(status_code=404, detail="Task not found")
+    metrics = status_info.get("performance_metrics")
+    if not metrics:
+        raise HTTPException(status_code=404, detail="Metrics not available yet")
+    return metrics
 
 if __name__ == "__main__":
     import uvicorn
