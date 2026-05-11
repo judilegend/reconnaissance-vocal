@@ -24,33 +24,14 @@ class AudioPreprocessor:
             speech = speech[:max_samples]
             logger.info(f"Trimmed audio to {max_duration}s")
 
-        # Simple noise reduction using spectral gating
-        # This is a basic implementation; for better results, consider noisereduce library
-        stft = librosa.stft(speech)
-        magnitude, phase = librosa.magphase(stft)
+        # Trim silence at beginning/end to avoid transcribing non-speech noise
+        speech, _ = librosa.effects.trim(speech, top_db=20)
 
-        # Estimate noise from first 0.5 seconds
-        noise_samples = int(0.5 * sample_rate)
-        if len(speech) > noise_samples:
-            noise_stft = librosa.stft(speech[:noise_samples])
-            noise_magnitude = np.abs(noise_stft)
-            noise_threshold = np.mean(noise_magnitude, axis=1, keepdims=True)
+        # Normalize audio amplitude
+        speech = librosa.util.normalize(speech)
 
-            # Apply spectral gating
-            mask = magnitude > noise_threshold * 1.5
-            magnitude_clean = magnitude * mask
-        else:
-            magnitude_clean = magnitude
-
-        # Reconstruct audio
-        stft_clean = magnitude_clean * phase
-        speech_clean = librosa.istft(stft_clean)
-
-        # Normalize
-        speech_clean = librosa.util.normalize(speech_clean)
-
-        logger.info(f"Audio preprocessing completed. Shape: {speech_clean.shape}")
-        return speech_clean
+        logger.info(f"Audio preprocessing completed. Shape: {speech.shape}")
+        return speech
 
 class TranscriptionModel:
     def transcribe(self, audio_path: str) -> str:
@@ -83,14 +64,14 @@ class Wav2Vec2Model(TranscriptionModel):
 
         # Decode
         predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = self.processor.batch_decode(predicted_ids)[0]
+        transcription = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        transcription = transcription.replace("|", " ").strip()
         logger.info(f"Transcription completed: {transcription}")
         return transcription
 
-    def transcribe_streaming(self, audio_path: str) -> List[str]:
+    def transcribe_streaming(self, audio_path: str) -> Any:
         """
-        Simulate streaming by returning tokens progressively.
-        In a real implementation, this would process chunks.
+        Simulate streaming by returning readable text and metrics.
         """
         logger.info("Starting streaming Wav2Vec2 transcription")
         speech = self.preprocessor.preprocess_audio(audio_path)
@@ -102,11 +83,16 @@ class Wav2Vec2Model(TranscriptionModel):
         with torch.no_grad():
             logits = self.model(input_values).logits
 
-        # Decode to tokens
-        predicted_ids = torch.argmax(logits, dim=-1).squeeze().tolist()
+        # Token prediction
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        transcription = transcription.replace("|", " ").strip()
+
+        # Create word-level streaming chunks
+        tokens = [word for word in transcription.split(" ") if word]
 
         # Calculate token confidence scores
-        token_ids = torch.tensor(predicted_ids, device=logits.device)
+        token_ids = predicted_ids.squeeze()
         probs = torch.softmax(logits, dim=-1)[0, torch.arange(logits.shape[1]), token_ids]
         precision_score = float(probs.mean().item())
         prob_np = probs.cpu().numpy()
@@ -114,22 +100,11 @@ class Wav2Vec2Model(TranscriptionModel):
         std = float(prob_np.std()) if float(prob_np.std()) > 1e-9 else 1e-9
         z_score = float(((prob_np - prob_np.mean()) / std).mean())
 
-        # Get vocabulary for token mapping
-        vocab = self.processor.tokenizer.get_vocab()
-        id_to_token = {v: k for k, v in vocab.items()}
-
-        tokens = []
-        for token_id in predicted_ids:
-            if token_id in id_to_token:
-                token = id_to_token[token_id]
-                if token not in ['[PAD]', '[UNK]', '|']:  # Filter out special tokens
-                    tokens.append(token)
-
         precision_percent = precision_score * 100
         filled = int(min(max(precision_percent / 10, 0), 10))
         precision_graph = "█" * filled + "░" * (10 - filled) + f" {precision_percent:.1f}%"
 
-        logger.info(f"Streaming tokens generated: {len(tokens)} tokens")
+        logger.info(f"Streaming text generated: {transcription}")
         return tokens, {
             "model_weight_millions": round(self.model_weight_millions, 2),
             "precision_score": round(precision_score, 4),
