@@ -55,42 +55,36 @@
           </section>
 
           <section class="space-y-4">
-            <h3 class="text-lg font-semibold">2. Enregistrement vocal</h3>
+            <h3 class="text-lg font-semibold">
+              2. Enregistrement vocal (max 15s)
+            </h3>
             <div class="grid gap-4 sm:grid-cols-2">
               <button
                 @click="toggleRecording"
-                :disabled="!token"
                 class="rounded-md border border-indigo-600 bg-white px-5 py-3 text-sm font-medium text-indigo-700 shadow-sm hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
+                <!-- :disabled="!token.value || token.value === ''" -->
                 {{
                   isRecording
                     ? "Arrêter l’enregistrement"
-                    : "Démarrer l’enregistrement"
+                    : "Démarrer l’enregistrement (15s max) "
                 }}
               </button>
               <div class="rounded-md border border-gray-200 bg-gray-50 p-4">
                 <p class="text-sm text-gray-700">État du microphone :</p>
                 <p class="mt-1 font-semibold">
-                  {{ isRecording ? "En enregistrement" : "Prêt" }}
+                  {{
+                    isRecording
+                      ? `En enregistrement (${recordingTime}s)`
+                      : "Prêt"
+                  }}
                 </p>
               </div>
             </div>
             <p class="text-sm text-gray-500">
-              Le système enregistre votre voix directement depuis le navigateur
-              et l’envoie au backend pour transcription.
+              Enregistrez votre voix pendant max 15 secondes. L'enregistrement
+              s'arrête automatiquement.
             </p>
-
-            <label class="block">
-              <span class="text-sm font-medium text-gray-700"
-                >Ou charger un fichier audio existant</span
-              >
-              <input
-                @change="handleFileUpload"
-                type="file"
-                accept="audio/*"
-                class="mt-2 block w-full text-sm text-gray-600 file:mr-4 file:rounded-full file:border-0 file:bg-indigo-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-indigo-700"
-              />
-            </label>
 
             <div v-if="audioUrl" class="space-y-2">
               <audio
@@ -105,38 +99,25 @@
           </section>
 
           <section class="space-y-4">
-            <h3 class="text-lg font-semibold">
-              3. Paramètres de transcription
-            </h3>
-            <label class="block">
-              <span class="text-sm font-medium text-gray-700">Modèle</span>
-              <select
-                v-model="modelType"
-                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-              >
-                <option value="wav2vec2">
-                  facebook/wav2vec2-base-960h (Rapide)
-                </option>
-                <option value="whisper-tiny">
-                  openai/whisper-tiny (Précis)
-                </option>
-              </select>
-            </label>
+            <h3 class="text-lg font-semibold">3. Transcription (Wav2Vec2)</h3>
             <button
               @click="submitTranscription"
               :disabled="!audioBlob || !token || isProcessing"
               class="inline-flex items-center justify-center rounded-md bg-indigo-600 px-5 py-3 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
             >
-              {{ isProcessing ? "Envoi en cours..." : "Transcrire l’audio" }}
+              {{
+                isProcessing
+                  ? "Transcription en cours..."
+                  : "Transcrire l’audio"
+              }}
             </button>
             <p class="text-sm text-gray-500">
-              Vous pouvez enregistrer, vérifier le fichier audio, puis lancer la
-              transcription sécurisée.
+              La transcription utilise Wav2Vec2 avec prétraitement audio.
             </p>
           </section>
 
           <section class="space-y-4">
-            <h3 class="text-lg font-semibold">4. Résultat</h3>
+            <h3 class="text-lg font-semibold">4. Résultat (Streaming)</h3>
             <div class="space-y-2">
               <p class="text-sm text-gray-700">
                 ID de tâche :
@@ -146,14 +127,11 @@
                 Statut :
                 <span class="font-medium">{{ status || "En attente" }}</span>
               </p>
-              <p v-if="transcript" class="text-sm text-gray-700">
-                Texte transcrit :
-              </p>
+              <p class="text-sm text-gray-700">Texte transcrit (streaming) :</p>
               <div
-                v-if="transcript"
-                class="whitespace-pre-wrap rounded-md border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800"
+                class="whitespace-pre-wrap rounded-md border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800 min-h-[100px]"
               >
-                {{ transcript }}
+                {{ streamingText }}
               </div>
               <p v-if="taskError" class="text-sm text-red-600">
                 {{ taskError }}
@@ -167,12 +145,11 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
 
 const username = ref("admin");
 const password = ref("admin123");
 const token = ref("");
-const modelType = ref("wav2vec2");
 const isRecording = ref(false);
 const isLoggingIn = ref(false);
 const isProcessing = ref(false);
@@ -180,26 +157,29 @@ const loginError = ref("");
 const taskError = ref("");
 const status = ref("");
 const taskId = ref("");
-const transcript = ref("");
+const streamingText = ref("");
 const audioUrl = ref("");
 const audioBlob = ref(null);
 const mediaRecorder = ref(null);
 const audioChunks = ref([]);
+const recordingTime = ref(0);
+const recordingInterval = ref(null);
 
 const apiBase = useRuntimeConfig().public.apiBase;
 
-const handleFileUpload = async (event) => {
-  const files = event.target.files;
-  if (!files || files.length === 0) {
-    return;
+onMounted(() => {
+  const storedToken = window.localStorage.getItem("jwt_token");
+  if (storedToken) {
+    token.value = storedToken;
+    console.log(
+      "Token JWT récupéré du localStorage:",
+      token.value.substring(0, 20) + "...",
+    );
   }
-  const file = files[0];
-  audioBlob.value = file;
-  audioUrl.value = URL.createObjectURL(file);
-  taskError.value = "";
-};
+});
 
 const login = async () => {
+  console.log("Tentative de connexion avec username:", username.value);
   loginError.value = "";
   isLoggingIn.value = true;
   try {
@@ -216,14 +196,20 @@ const login = async () => {
     if (!response.ok) {
       const data = await response.json();
       loginError.value = data.detail || "Échec de la connexion";
+      console.error("Erreur de connexion:", loginError.value);
       return;
     }
 
     const data = await response.json();
     token.value = data.access_token;
     window.localStorage.setItem("jwt_token", token.value);
+    console.log(
+      "Connexion réussie, token stocké:",
+      token.value.substring(0, 20) + "...",
+    );
   } catch (err) {
     loginError.value = "Erreur de connexion au serveur";
+    console.error("Erreur réseau:", err);
   } finally {
     isLoggingIn.value = false;
   }
@@ -235,9 +221,11 @@ const toggleRecording = async () => {
     return;
   }
 
+  console.log("Démarrage de l'enregistrement");
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     taskError.value =
-      "Votre navigateur ne prend pas en charge l’enregistrement audio.";
+      "Votre navigateur ne prend pas en charge l'enregistrement audio.";
+    console.error("MediaDevices non supporté");
     return;
   }
 
@@ -249,6 +237,7 @@ const toggleRecording = async () => {
     mediaRecorder.value.addEventListener("dataavailable", (event) => {
       if (event.data && event.data.size > 0) {
         audioChunks.value.push(event.data);
+        console.log("Chunk audio ajouté, taille:", event.data.size);
       }
     });
 
@@ -256,47 +245,73 @@ const toggleRecording = async () => {
       const blobType = audioChunks.value[0]?.type || "audio/webm";
       audioBlob.value = new Blob(audioChunks.value, { type: blobType });
       audioUrl.value = URL.createObjectURL(audioBlob.value);
+      console.log(
+        "Enregistrement terminé, blob créé, taille:",
+        audioBlob.value.size,
+      );
+      mediaRecorder.value.stream.getTracks().forEach((track) => track.stop());
     });
 
     mediaRecorder.value.start();
     isRecording.value = true;
+    recordingTime.value = 0;
     taskError.value = "";
+
+    // Auto-stop after 15 seconds
+    recordingInterval.value = setInterval(() => {
+      recordingTime.value++;
+      if (recordingTime.value >= 15) {
+        stopRecording();
+      }
+    }, 1000);
+
+    console.log("Enregistrement démarré");
   } catch (err) {
-    taskError.value = "Impossible d’accéder au microphone.";
+    taskError.value = "Impossible d'accéder au microphone.";
+    console.error("Erreur d'accès au microphone:", err);
   }
 };
 
 const stopRecording = () => {
+  console.log("Arrêt de l'enregistrement");
   if (mediaRecorder.value) {
     mediaRecorder.value.stop();
-    mediaRecorder.value.stream.getTracks().forEach((track) => track.stop());
+  }
+  if (recordingInterval.value) {
+    clearInterval(recordingInterval.value);
   }
   isRecording.value = false;
+  recordingTime.value = 0;
 };
 
 const submitTranscription = async () => {
   if (!audioBlob.value) {
     taskError.value =
-      "Aucun enregistrement disponible. Veuillez enregistrer votre voix d’abord.";
+      "Aucun enregistrement disponible. Veuillez enregistrer votre voix d'abord.";
+    console.error("Aucun blob audio disponible");
     return;
   }
   if (!token.value) {
     taskError.value =
       "Connectez-vous avant de faire une demande de transcription.";
+    console.error("Aucun token JWT disponible");
     return;
   }
 
+  console.log(
+    "Soumission de la transcription, taille du blob:",
+    audioBlob.value.size,
+  );
   isProcessing.value = true;
   taskError.value = "";
   status.value = "Envoi du fichier...";
-  transcript.value = "";
+  streamingText.value = "";
   taskId.value = "";
 
   try {
     const formData = new FormData();
-    const filename = audioBlob.value?.name || "recording.webm";
-    formData.append("file", audioBlob.value, filename);
-    formData.append("model_type", modelType.value);
+    formData.append("file", audioBlob.value, "recording.webm");
+    formData.append("model_type", "wav2vec2");
 
     const response = await fetch(`${apiBase}/transcribe`, {
       method: "POST",
@@ -308,22 +323,26 @@ const submitTranscription = async () => {
 
     if (!response.ok) {
       const data = await response.json();
-      taskError.value = data.detail || "Erreur lors de l’envoi du fichier.";
+      taskError.value = data.detail || "Erreur lors de l'envoi du fichier.";
+      console.error("Erreur lors de l'envoi:", taskError.value);
       return;
     }
 
     const data = await response.json();
     taskId.value = data.task_id;
     status.value = "Tâche créée";
+    console.log("Tâche créée:", taskId.value);
     pollTask(data.task_id);
   } catch (err) {
-    taskError.value = "Impossible de contacter l’API de transcription.";
+    taskError.value = "Impossible de contacter l'API de transcription.";
+    console.error("Erreur réseau:", err);
   } finally {
     isProcessing.value = false;
   }
 };
 
 const pollTask = async (id) => {
+  console.log("Début du polling pour la tâche:", id);
   status.value = "Traitement en cours...";
   const interval = setInterval(async () => {
     try {
@@ -333,30 +352,35 @@ const pollTask = async (id) => {
       if (!response.ok) {
         clearInterval(interval);
         taskError.value = "Tâche introuvable ou autorisation manquante.";
+        console.error("Erreur lors du polling:", taskError.value);
         return;
       }
       const data = await response.json();
       status.value = data.status;
+      console.log("Statut de la tâche:", data.status);
+
+      if (data.streaming_tokens && data.streaming_tokens.length > 0) {
+        streamingText.value = data.streaming_tokens
+          .join("")
+          .replace(/\|/g, " ");
+        console.log("Tokens streaming mis à jour:", streamingText.value);
+      }
 
       if (data.status === "COMPLETED") {
-        transcript.value = data.result || "Aucune transcription retournée.";
+        streamingText.value = data.result || "Aucune transcription retournée.";
         clearInterval(interval);
+        console.log("Transcription terminée:", streamingText.value);
       }
       if (data.status === "FAILED") {
         taskError.value = data.error || "La transcription a échoué.";
         clearInterval(interval);
+        console.error("Transcription échouée:", taskError.value);
       }
     } catch (err) {
       clearInterval(interval);
       taskError.value = "Impossible de vérifier le statut de la tâche.";
+      console.error("Erreur lors du polling:", err);
     }
-  }, 2500);
+  }, 1000);
 };
-
-if (process.client) {
-  const storedToken = window.localStorage.getItem("jwt_token");
-  if (storedToken) {
-    token.value = storedToken;
-  }
-}
 </script>
